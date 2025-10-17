@@ -1,0 +1,244 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>Photo Encrypt and Decrypt</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
+
+body{
+  margin:0; padding:0;
+  font-family:'Inter',sans-serif;
+  background: #121216;
+  color:#eee;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  min-height:100vh;
+}
+
+h1{
+  margin-top:40px;
+  font-weight:600;
+  text-shadow:0 0 10px rgba(0,0,0,0.3);
+}
+
+.container{
+  background: #1e1e28;
+  padding:30px 35px;
+  border-radius:20px;
+  box-shadow:0 15px 40px rgba(0,0,0,0.5);
+  max-width:480px;
+  width:90%;
+  display:flex;
+  flex-direction:column;
+  transition: transform 0.2s ease-out, box-shadow 0.2s ease-out;
+}
+
+label{
+  margin-top:12px;
+  font-weight:500;
+}
+
+input,textarea,button{
+  font:inherit;
+  padding:12px 15px;
+  margin:8px 0;
+  border-radius:10px;
+  border:none;
+  outline:none;
+  width:100%;
+  box-sizing:border-box;
+  font-size:14px;
+  background: linear-gradient(145deg,#2a2a38,#1f1f28);
+  color:#eee;
+  transition:0.3s;
+  position:relative;
+  overflow:hidden;
+}
+
+input:focus, textarea:focus{
+  box-shadow:0 0 12px rgba(74,74,212,0.5);
+  background: linear-gradient(145deg,#33334a,#222236);
+}
+
+button{
+  cursor:pointer;
+  background: linear-gradient(145deg,#4a4ad4,#2a2a7f);
+  font-weight:600;
+  color:#fff;
+  box-shadow:0 4px 12px rgba(0,0,0,0.4);
+  transition:0.3s, transform 0.2s ease-out;
+  margin-top:12px;
+}
+button:hover{
+  transform: translateY(-3px) translateZ(3px);
+  box-shadow:0 10px 20px rgba(74,74,212,0.5);
+  background: linear-gradient(145deg,#5a5af0,#3a3a9f);
+}
+
+.ripple {
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.3);
+  transform: scale(0);
+  animation: rippleAnim 0.6s linear;
+  pointer-events:none;
+}
+@keyframes rippleAnim{
+  to { transform: scale(4); opacity: 0; }
+}
+
+#out{
+  background: rgba(0,0,0,0.2);
+  padding:10px;
+  border-radius:10px;
+  min-height:28px;
+  font-size:13px;
+  word-break:break-word;
+  margin-top:10px;
+  opacity:0;
+  transition:opacity 0.4s;
+}
+
+.row{display:flex; gap:12px;}
+.col{flex:1;}
+canvas{display:none;}
+</style>
+</head>
+<body>
+<h1>Photo Encrypt and Decrypt</h1>
+<div class="container" id="container">
+  <label>Select Image (png/jpg)</label>
+  <input id="imgIn" type="file" accept="image/*">
+
+  <label>Secret Message</label>
+  <textarea id="msg" rows="5" placeholder="Enter your message here"></textarea>
+
+  <label>Password</label>
+  <input id="pass" type="password" placeholder="Enter password">
+
+  <div class="row">
+    <div class="col"><button id="embedBtn">Embed & Download</button></div>
+    <div class="col"><button id="extractBtn">Extract</button></div>
+  </div>
+
+  <div id="out">Waiting...</div>
+</div>
+<div style="text-align:center; font-size:12px; color:#aaa; margin-top:15px;">By Cloud</div>
+
+
+<canvas id="c"></canvas>
+
+<script>
+// ripple effect
+function addRipple(e){
+  const btn=e.currentTarget;
+  const circle=document.createElement('span');
+  circle.className='ripple';
+  const rect=btn.getBoundingClientRect();
+  circle.style.left=(e.clientX-rect.left)+'px';
+  circle.style.top=(e.clientY-rect.top)+'px';
+  btn.appendChild(circle);
+  setTimeout(()=>{circle.remove();},600);
+}
+document.querySelectorAll('button').forEach(btn=>btn.addEventListener('click',addRipple));
+
+// fade in/out message
+function showMessage(msg){
+  const out=document.getElementById('out');
+  out.style.opacity=0;
+  setTimeout(()=>{
+    out.textContent=msg;
+    out.style.opacity=1;
+  },200);
+}
+
+// text <-> uint8array
+function str2ab(s){return new TextEncoder().encode(s);}
+function ab2str(ab){return new TextDecoder().decode(ab);}
+async function deriveKey(pass, salt){
+  const pwUtf8 = new TextEncoder().encode(pass);
+  const baseKey = await crypto.subtle.importKey("raw", pwUtf8, "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({name:"PBKDF2",salt,iterations:100000,hash:"SHA-256"}, baseKey,{name:"AES-GCM", length:256}, false, ["encrypt","decrypt"]);
+}
+function embedBitsIntoImageData(imageData,bits){
+  const data=imageData.data; let bitIdx=0;
+  for(let i=0;i<data.length && bitIdx<bits.length;i+=4){
+    data[i]=(data[i]&0xFE)|bits[bitIdx++];
+    if(bitIdx>=bits.length) break;
+    data[i+1]=(data[i+1]&0xFE)|bits[bitIdx++];
+    if(bitIdx>=bits.length) break;
+    data[i+2]=(data[i+2]&0xFE)|bits[bitIdx++];
+  }
+}
+function readBitsFromImageData(imageData){
+  const data=imageData.data; const bits=[];
+  for(let i=0;i<data.length;i+=4){
+    bits.push(data[i]&1);
+    bits.push(data[i+1]&1);
+    bits.push(data[i+2]&1);
+  }
+  return bits;
+}
+function bytesToBits(bytes){const bits=[]; for(let b of bytes)for(let i=7;i>=0;i--) bits.push((b>>i)&1); return bits;}
+function bitsToBytes(bits){const bytes=new Uint8Array(Math.floor(bits.length/8)); for(let i=0;i<bytes.length;i++){let val=0; for(let j=0;j<8;j++) val=(val<<1)|bits[i*8+j]; bytes[i]=val;} return bytes;}
+function buildPayload(salt, iv, ciphertext){
+  const magic=new TextEncoder().encode("STEG"); const header=new Uint8Array(36);
+  header.set(magic,0); header.set(new Uint8Array(salt),4); header.set(new Uint8Array(iv),20);
+  header[32]=(ciphertext.byteLength>>>24)&0xFF;
+  header[33]=(ciphertext.byteLength>>>16)&0xFF;
+  header[34]=(ciphertext.byteLength>>>8)&0xFF;
+  header[35]=(ciphertext.byteLength)&0xFF;
+  const out=new Uint8Array(header.byteLength+ciphertext.byteLength);
+  out.set(header,0); out.set(new Uint8Array(ciphertext), header.byteLength);
+  return out;
+}
+function parsePayload(bytes){
+  if(bytes.length<36)throw new Error("payload too short");
+  const magic=new TextDecoder().decode(bytes.slice(0,4));
+  if(magic!=="STEG")throw new Error("magic mismatch");
+  const salt=bytes.slice(4,20); const iv=bytes.slice(20,32);
+  const clen=(bytes[32]<<24)|(bytes[33]<<16)|(bytes[34]<<8)|bytes[35];
+  if(bytes.length<36+clen)throw new Error("ciphertext incomplete");
+  const ciphertext=bytes.slice(36,36+clen);
+  return {salt, iv, ciphertext};
+}
+
+// embed
+document.getElementById('embedBtn').addEventListener('click',async()=>{
+  try{
+    const f=document.getElementById('imgIn').files[0]; if(!f)return alert("Select an image");
+    const msg=document.getElementById('msg').value||""; const pass=document.getElementById('pass').value; if(!pass)return alert("Enter password");
+    const img=new Image(); img.src=URL.createObjectURL(f);
+    await new Promise(res=>img.onload=res);
+    const c=document.getElementById('c'); c.width=img.naturalWidth; c.height=img.naturalHeight;
+    const ctx=c.getContext('2d'); ctx.drawImage(img,0,0); const imageData=ctx.getImageData(0,0,c.width,c.height);
+    const salt=crypto.getRandomValues(new Uint8Array(16)); const iv=crypto.getRandomValues(new Uint8Array(12));
+    const key=await deriveKey(pass,salt);
+    const encPayload=await crypto.subtle.encrypt({name:"AES-GCM",iv},key,str2ab(msg));
+    const payload=buildPayload(salt,iv,new Uint8Array(encPayload));
+    const bits=bytesToBits(payload); embedBitsIntoImageData(imageData,bits); ctx.putImageData(imageData,0,0);
+    c.toBlob(blob=>{const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='stego.png';a.click();URL.revokeObjectURL(a.href);showMessage("Embed complete. stego.png downloaded.")},'image/png');
+  }catch(e){showMessage("Error: "+e.message); console.error(e);}
+});
+
+// extract
+document.getElementById('extractBtn').addEventListener('click',async()=>{
+  try{
+    const f=document.getElementById('imgIn').files[0]; if(!f)return alert("Select a stego image");
+    const pass=document.getElementById('pass').value; if(!pass)return alert("Enter password");
+    const img=new Image(); img.src=URL.createObjectURL(f);
+    await new Promise(res=>img.onload=res);
+    const c=document.getElementById('c'); c.width=img.naturalWidth; c.height=img.naturalHeight;
+    const ctx=c.getContext('2d'); ctx.drawImage(img,0,0); const imageData=ctx.getImageData(0,0,c.width,c.height);
+    const bits=readBitsFromImageData(imageData); const bytes=bitsToBytes(bits);
+    const parsed=parsePayload(bytes); const key=await deriveKey(pass,parsed.salt);
+    const plain=await crypto.subtle.decrypt({name:"AES-GCM",iv:parsed.iv},key,parsed.ciphertext);
+    const msg=ab2str(new Uint8Array(plain));
+    showMessage("Extracted: "+msg);
+  }catch(e){showMessage("Error: "+(e.message||e)); console.error(e);}
+});
+</script>
+</body>
+</html>
